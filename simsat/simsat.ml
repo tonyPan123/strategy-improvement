@@ -53,6 +53,84 @@ let parse_smtlib2_shared str =
    satisfiable, so no interpolant exists -- or (unknown). *)
 let seq_separator = ";;;SEQ;;;"
 
+(* Sequence interpolation, through MathSAT.
+
+   ArkZ3.interpolate_seq goes through Z3's interpolating prover, which in the
+   version this repository builds against cannot handle every proof the solver
+   hands it: a game whose transition relation is a disjunction of conjunctions
+   -- one case per observation, say -- makes it fail with "Unsupported proof
+   rule: (rewrite (= (and p q) (not (or (not p) (not q)))))", and reshaping
+   the input to avoid that rewrite runs into a malformed term inside the
+   prover instead.  MathSAT is already a dependency, and its interpolation for
+   linear arithmetic is dependable, so the sequence goes there: one
+   interpolation group per element, and the interpolant for the first j + 1
+   groups separates the first j + 1 elements from the rest.  Z3 is kept as a
+   fallback for sequences MathSAT cannot decide.
+
+   Interpolants come back as SMT-LIB2 text rather than through
+   ArkMathsat.of_msat, which crashes on them. *)
+let interpolate_seq seq =
+  match seq with
+  | [] | [_] -> invalid_arg "interpolate_seq: need at least two formulas"
+  | _ ->
+    let config = Mathsat.msat_create_config () in
+    Mathsat.msat_set_option config "interpolation" "true";
+    let msat = Mathsat.msat_create_env config in
+    let msat_type =
+      let msat_bool = Mathsat.msat_get_bool_type msat in
+      let msat_int = Mathsat.msat_get_integer_type msat in
+      let msat_rational = Mathsat.msat_get_rational_type msat in
+      let rec go = function
+        | `TyInt -> msat_int
+        | `TyReal -> msat_rational
+        | `TyBool -> msat_bool
+        | `TyFun (args, ret) ->
+          Mathsat.msat_get_function_type msat
+            (List.map go (args :> Syntax.typ list))
+            (go (ret :> Syntax.typ))
+      in
+      go
+    in
+    (* MathSAT declarations carry the ark symbol's name, which is also how
+       parse_smtlib2_shared interns symbols, so an interpolant printed by
+       MathSAT parses back onto the same ark symbols. *)
+    let decl_of_sym =
+      Memo.memo (fun sym ->
+          Mathsat.msat_declare_function msat
+            (Syntax.show_symbol ctx sym)
+            (msat_type (Syntax.typ_symbol ctx sym)))
+    in
+    let of_formula = ArkMathsat.msat_of_formula ctx msat decl_of_sym in
+    let groups =
+      List.map (fun phi ->
+          let group = Mathsat.msat_create_itp_group msat in
+          Mathsat.msat_set_itp_group msat group;
+          Mathsat.msat_assert_formula msat (of_formula phi);
+          group)
+        seq
+    in
+    begin match Mathsat.msat_solve msat with
+      | Mathsat.Sat -> `Sat
+      | Mathsat.Unknown ->
+        begin match smt_ctx#interpolate_seq seq with
+          | `Unsat interpolants -> `Unsat interpolants
+          | `Sat _ -> `Sat
+          | `Unknown -> `Unknown
+        end
+      | Mathsat.Unsat ->
+        let prefix = ref [] in
+        let interpolants =
+          (* One interpolant per split point: all but the last element. *)
+          BatList.take (List.length groups - 1) groups
+          |> List.map (fun group ->
+              prefix := group :: !prefix;
+              Mathsat.msat_get_interpolant msat !prefix
+              |> Mathsat.msat_to_smtlib2 msat
+              |> parse_smtlib2_shared)
+        in
+        `Unsat interpolants
+    end
+
 let interpolate filename =
   let chunks = BatString.split_on_string ~by:seq_separator (file_contents filename) in
   match chunks with
@@ -62,14 +140,14 @@ let interpolate filename =
     let seq =
       List.map (fun element -> parse_smtlib2_shared (preamble ^ "\n" ^ element)) elements
     in
-    begin match smt_ctx#interpolate_seq seq with
+    begin match interpolate_seq seq with
       | `Unsat interpolants ->
         Format.printf "(unsat";
         List.iter (fun interpolant ->
             Format.printf "@\n  (interpolant %a)" (SmtlibOut.pp_formula ctx) interpolant)
           interpolants;
         Format.printf ")@\n"
-      | `Sat _ -> Format.printf "(sat)@\n"
+      | `Sat -> Format.printf "(sat)@\n"
       | `Unknown -> Format.printf "(unknown)@\n"
     end
 
