@@ -17,6 +17,106 @@ let file_contents filename =
 
 let load_smtlib2 filename = smt_ctx#load_smtlib2 (file_contents filename)
 
+(* Like smt_ctx#load_smtlib2, except that symbols are interned by name in the
+   ark context rather than in a table private to the call.  Several strings
+   can therefore be parsed into formulas that share variables, which is what
+   sequence interpolation needs. *)
+let parse_smtlib2_shared str =
+  let z3 = smt_ctx#z3 in
+  let ast = Z3.SMT.parse_smtlib2_string z3 str [] [] [] [] in
+  let sym_of_decl decl =
+    let name = Z3.Symbol.to_string (Z3.FuncDecl.get_name decl) in
+    let typ = ArkZ3.typ_of_sort (Z3.FuncDecl.get_range decl) in
+    if Syntax.is_registered_name ctx name then
+      Syntax.get_named_symbol ctx name
+    else begin
+      Syntax.register_named_symbol ctx name typ;
+      Syntax.get_named_symbol ctx name
+    end
+  in
+  match Syntax.Expr.refine ctx (ArkZ3.of_z3 ctx sym_of_decl ast) with
+  | `Formula phi -> phi
+  | `Term _ -> invalid_arg "parse_smtlib2_shared: expected a formula"
+
+(* Sequence interpolation.
+
+   The input file holds the elements of the sequence separated by a line
+   containing only [seq_separator].  The text preceding the first separator is
+   a preamble (declarations) that is prepended to every element, so each
+   element is parsed as a self-contained SMT-LIB2 script.
+
+   On success the output is
+
+     (unsat (interpolant <formula>) ... (interpolant <formula>))
+
+   and on failure either (sat) -- the conjunction of the sequence is
+   satisfiable, so no interpolant exists -- or (unknown). *)
+let seq_separator = ";;;SEQ;;;"
+
+let interpolate filename =
+  let chunks = BatString.split_on_string ~by:seq_separator (file_contents filename) in
+  match chunks with
+  | [] | [_] ->
+    failwith ("interpolate: " ^ filename ^ " contains no `" ^ seq_separator ^ "' separator")
+  | preamble::elements ->
+    let seq =
+      List.map (fun element -> parse_smtlib2_shared (preamble ^ "\n" ^ element)) elements
+    in
+    begin match smt_ctx#interpolate_seq seq with
+      | `Unsat interpolants ->
+        Format.printf "(unsat";
+        List.iter (fun interpolant ->
+            Format.printf "@\n  (interpolant %a)" (SmtlibOut.pp_formula ctx) interpolant)
+          interpolants;
+        Format.printf ")@\n"
+      | `Sat _ -> Format.printf "(sat)@\n"
+      | `Unknown -> Format.printf "(unknown)@\n"
+    end
+
+(* Strategy synthesis with machine-readable output.
+
+   Same computation as -synth on an .smt2 file, but the winning strategy is
+   printed as an s-expression over SMT-LIB2 formulas instead of being
+   pretty-printed for a human reader.  The quantifier prefix is printed
+   alongside it: the strategy tree has one level per move of the winning
+   player, and the prefix says which variable each level decides. *)
+let strategy filename =
+  let phi =
+    parse_smtlib2_shared (file_contents filename)
+    |> Syntax.eliminate_ite ctx
+  in
+  let (qf_pre, matrix) = Quantifier.normalize ctx phi in
+  let pp_prefix formatter =
+    List.iter (fun (quantifier, sym) ->
+        Format.fprintf formatter "@\n  (%s %s %a)"
+          (match quantifier with `Exists -> "exists" | `Forall -> "forall")
+          (SmtlibOut.symbol_name ctx sym)
+          SmtlibOut.pp_typ (match Syntax.typ_symbol ctx sym with
+              | `TyFun (_, _) -> invalid_arg "strategy: function-typed quantifier"
+              | (`TyInt | `TyReal | `TyBool) as typ -> typ))
+      qf_pre
+  in
+  let rec pp_strategy formatter (Quantifier.Strategy cases) =
+    Format.fprintf formatter "(strategy";
+    List.iter (fun (guard, move, sub_strategy) ->
+        Format.fprintf formatter "@\n(case %a %a %a)"
+          (SmtlibOut.pp_formula ctx) guard
+          (SmtlibOut.pp ctx) move
+          pp_strategy sub_strategy)
+      cases;
+    Format.fprintf formatter ")"
+  in
+  let print_strategy winner strategy =
+    Format.printf "(%s@\n (prefix%t)@\n %a)@\n"
+      winner
+      pp_prefix
+      pp_strategy strategy
+  in
+  match Quantifier.winning_strategy ctx qf_pre matrix with
+  | `Sat strategy -> print_strategy "sat" strategy
+  | `Unsat strategy -> print_strategy "unsat" strategy
+  | `Unknown -> Format.printf "(unknown)@\n"
+
 let load_reachability_game filename =
   let open Lexing in
   let lexbuf = Lexing.from_channel (open_in filename) in
@@ -104,6 +204,13 @@ let spec_list = [
   ("-sat", Arg.String sat, " Test satisfiability");
   ("-synth", Arg.String synthesize_strategy, " Synthesizing a winning strategy");
   ("-validate", Arg.Set validate, " Validate winning strategy");
+
+  ("-strategy", Arg.String strategy,
+   " Synthesize a winning strategy for a satisfiability game, printing it as \
+    an s-expression over SMT-LIB2 formulas");
+  ("-interpolate", Arg.String interpolate,
+   " Compute a sequence interpolant for a `;;;SEQ;;;'-separated sequence of \
+    SMT-LIB2 formulas");
 
   ("-verbosity",
    Arg.String (fun v -> Log.verbosity_level := (Log.level_of_string v)),
