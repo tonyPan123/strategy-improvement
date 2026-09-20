@@ -20,6 +20,10 @@ _build/
 setup.ml
 setup.data
 myocamlbuild.ml
+API.odocl
+AUTHORS.txt
+INSTALL.txt
+README.txt
 *.mlpack
 *.mldylib
 *.mllib

@@ -13,7 +13,7 @@ let file_contents filename =
   let buf = Bytes.create len in
   really_input chan buf 0 len;
   close_in chan;
-  buf
+  Bytes.to_string buf
 
 let load_smtlib2 filename = smt_ctx#load_smtlib2 (file_contents filename)
 

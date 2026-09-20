@@ -2019,8 +2019,8 @@ module Split (Iter : DomainPlus) = struct
          && Iter.equal l l'
          && Iter.equal r r')
       (BatEnum.combine
-         (Expr.Map.enum split_iter.split,
-          Expr.Map.enum split_iter'.split))
+         (Expr.Map.enum split_iter.split)
+         (Expr.Map.enum split_iter'.split))
 end
 
 module Sum (A : PreDomain) (B : PreDomain) = struct

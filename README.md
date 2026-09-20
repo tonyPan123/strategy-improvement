@@ -10,29 +10,49 @@ algorithms.
 Building
 ========
 
+### Quick start
+
+`scripts/install-deps.sh` performs every step described below (opam switch,
+MathSAT, Z3, OCRS, ocaml-mathsat).  It has been verified on Ubuntu 24.04 with
+OCaml 4.14.2:
+
+```
+ sudo apt-get install opam libgmp-dev libmpfr-dev m4 pkg-config build-essential
+ ./scripts/install-deps.sh
+ eval $(opam env --switch=simsat)
+ make
+```
+
+`make` produces `simsat.native`, `test_ark.native` and `arkTop.native` in the
+top-level directory.  `./test_ark.native` runs the ark unit test suite.
+
 ### Dependencies
 
-Duet depends on several software packages.  The following dependencies need to be installed manually.
-
- + [opam](http://opam.ocaml.org) (with OCaml >= 4.02 & native compiler)
+ + [opam](http://opam.ocaml.org) with OCaml 4.14.x & the native compiler
  + GMP and MPFR
- + [MathSAT](http://mathsat.fbk.eu) **version 5.3.14** (version 5.4 is incompatible)
+ + [MathSAT](http://mathsat.fbk.eu) **version 5.3.14** (version 5.4 is incompatible),
+   with `mathsat.h` and `libmathsat.a` installed under `/usr/local`
+ + [ocaml-mathsat](https://github.com/zkincaid/ocaml-mathsat) (findlib name `mathsat`)
+ + [OCRS](https://github.com/cyphertjohn/OCRS), release `20180427v3` (findlib name `ocrs`);
+   the current OCRS master installs itself as `OCRS` and is *not* a drop-in replacement
+ + Z3 with the OCaml API and the **interpolation** API (findlib name `Z3`)
+ + `opam install batteries ppx_deriving ocamlgraph ounit menhir ocamlbuild camlidl apron oasis num`
 
-On Ubuntu, you can install these packages (except Java and MathSAT) with:
-```
- sudo apt-get install opam libgmp-dev libmpfr-dev
-```
+The interpolation requirement is the reason a stock `opam install z3` will not
+work: `Z3.Interpolation` was dropped from upstream Z3 after 4.5, and
+`ArkZ3.interpolate_seq` &mdash; which the reachability game solver in `ark/game.ml`
+depends on &mdash; needs it.  Build
+[zkincaid/z3](https://github.com/zkincaid/z3) at tag `20180513` instead.  Two
+adjustments are needed to build that tree with a modern toolchain:
 
-On MacOS, you can install these packages (except Java and MathSAT) with:
-```
- brew install opam gmp mpfr
-```
-
-Next, add the [sv-opam](https://github.com/zkincaid/sv-opam) OPAM repository, and install the rest of SimSat's dependencies.  These are built from source, so grab a coffee &mdash; this may take a long time.
-```
- opam remote add sv git://github.com/zkincaid/sv-opam.git
- opam install ocamlgraph batteries oasis ppx_deriving Z3 apron ounit menhir mathsat OCRS
-```
+ + its `scripts/mk_make.py` can be run with `python3` (the original instructions
+   call for `python2.7`, which is no longer packaged on current distributions);
+ + the four `#if 0 // ZK: multiple defs` blocks in
+   `src/ast/proofs/proof_utils.cpp` have to be re-enabled, otherwise the
+   `proof_utils::` member functions they contain are defined nowhere in the tree
+   and `libz3.so` fails to link with undefined references to
+   `proof_utils::reduce_hypotheses`, `proof_utils::permute_unit_resolution` and
+   `proof_utils::push_instantiations_up`.
 
 ### Building SimSat
 

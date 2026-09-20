@@ -14,7 +14,7 @@ let file_contents filename =
   let buf = Bytes.create len in
   really_input chan buf 0 len;
   close_in chan;
-  buf
+  Bytes.to_string buf
 
 let load_math_formula filename =
   let open Lexing in
