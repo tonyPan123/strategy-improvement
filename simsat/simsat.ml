@@ -53,6 +53,16 @@ let parse_smtlib2_shared str =
    satisfiable, so no interpolant exists -- or (unknown). *)
 let seq_separator = ";;;SEQ;;;"
 
+(* Which interpolant MathSAT should hand back, when several would do.
+
+   An interpolant is only pinned down between the two sides of the split, and
+   the algorithm chosen decides where in that range it lands: McMillan's gives
+   the strongest, the inverse gives the weakest.  Strength is not always what
+   a caller wants -- a procedure that covers one annotation with another is
+   looking for the most general statement that still rules the failure out --
+   so it is left to the caller to say. *)
+let interpolation_mode = ref None
+
 (* Sequence interpolation, through MathSAT.
 
    ArkZ3.interpolate_seq goes through Z3's interpolating prover, which in the
@@ -75,6 +85,13 @@ let interpolate_seq seq =
   | _ ->
     let config = Mathsat.msat_create_config () in
     Mathsat.msat_set_option config "interpolation" "true";
+    begin match !interpolation_mode with
+      | None -> ()
+      | Some mode ->
+        let mode = string_of_int mode in
+        Mathsat.msat_set_option config "dpll.interpolation_mode" mode;
+        Mathsat.msat_set_option config "theory.la.interpolation_mode" mode
+    end;
     let msat = Mathsat.msat_create_env config in
     let msat_type =
       let msat_bool = Mathsat.msat_get_bool_type msat in
@@ -286,6 +303,10 @@ let spec_list = [
   ("-strategy", Arg.String strategy,
    " Synthesize a winning strategy for a satisfiability game, printing it as \
     an s-expression over SMT-LIB2 formulas");
+  ("-interpolation-mode",
+   Arg.Int (fun mode -> interpolation_mode := Some mode),
+   " Which interpolant to prefer when several would do: 0 strongest \
+     (McMillan), 1 symmetric, 2 weakest (inverse McMillan)");
   ("-interpolate", Arg.String interpolate,
    " Compute a sequence interpolant for a `;;;SEQ;;;'-separated sequence of \
     SMT-LIB2 formulas");
